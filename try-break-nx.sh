@@ -10,5 +10,3 @@ echo "crew PID: $crew_pid"
 sleep 0.3
 
 kill -9 $crew_pid
-
-wait
