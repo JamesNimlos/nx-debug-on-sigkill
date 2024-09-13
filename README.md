@@ -1,71 +1,69 @@
-# Benchmarking Nx, Turbo, and Lage
+# Nx Debug panic on SIGKILL
 
-Recording:
+We've noticed that if we send SIGKILL to an Nx process sometimes it will crash from within the Rust Nx code. This issue is much more prevalent on our private monorepo which has ~650 projects total.
 
-![nx-turbo-recording](./readme-assets/turbo-nx-perf.gif)
+Here's the the result of running the `try-break-nx.sh`.
+```sh
+~/projects/nx-debug-stalled-process > ./try-break-nx.sh
 
-Repo contains:
+ NX   Resetting the Nx workspace cache and stopping the Nx Daemon.
 
-1. 5 shared buildable packages/libraries with 250 components each
-2. 5 Next.js applications built out of 20 app-specific libraries. Each app-specific lib has 250 components each. Each
-   library uses the shared components.
+This might take a few minutes.
 
-Combined there are about 26k components. It's a lot of components, but they are very small. This corresponds to a medium
-size enterprise repo. A lot of our clients have repos that are 10x bigger than this, so this repo isn't something out or
-ordinary. And, the bigger the repo, the bigger the difference in performance between Nx and Turbo.
 
-The repo has Nx, Turbo, and Lage enabled. They don't affect each other. You can remove one without affecting the
-other one.
+ NX   Daemon Server - Stopped
 
-## Benchmark & Results (May 1)
 
-`npm run benchmark` runs the benchmark. The following numbers produced by an M1Max MBP on macOS 13 (Ventura). On a Windows machine all the tools will get slower, and the delta between Nx and Turbo/Lage will get bigger.
+ NX   Successfully reset the Nx workspace.
 
-- **average turbo time is: 633.1**
-- **average lage time is: 395.7**
-- **average nx time is: 153.0**
-- **nx is 2.58x faster than lage**
-- **nx is 4.13x faster than turbo**
+crew PID: 28807
+./try-break-nx.sh: line 16: 28807 Killed: 9               nx start crew
+~/projects/nx-debug-stalled-process > 
+ NX   Running target start for project crew and 1 task it depends on:
 
-### Why is Nx faster than Turbo
+———————————————————————————————————————————————————————————————————————————————————————————————————————————————
 
-Nx uses several optimizations to minimize the amount of computation required. For instance, it stores information about
-the repository on disk to be able to recompute only what is needed. It runs a daemon process that gets all the necessary
-data structures ready before the developer invokes a command. And the data structures are updated incrementally, usually
-in just a few milliseconds. 
+> nx run crew:build
 
-Although Nx plugins use Node.js, the performance sensitive parts of Nx are written in Rust.
+thread '<unnamed>' panicked at packages/nx/src/native/pseudo_terminal/pseudo_terminal.rs:61:27:
+Failed to enter raw terminal mode: Os { code: 5, kind: Uncategorized, message: "Input/output error" }
+stack backtrace:
+   0:        0x10e7ae488 - <std::sys_common::backtrace::_print::DisplayBacktrace as core::fmt::Display>::fmt::h0aa20ca08aeb683c
+   1:        0x10e559d8c - core::fmt::write::h168dbafcf35bac68
+   2:        0x10e785244 - std::io::Write::write_fmt::hdb0dd3f09dcf2281
+   3:        0x10e7b0334 - std::sys_common::backtrace::print::h57b289e4b951ee17
+   4:        0x10e7aff88 - std::panicking::default_hook::{{closure}}::h783b6c512154ec65
+   5:        0x10e7b1000 - std::panicking::rust_panic_with_hook::h9aea678ca49d64cf
+   6:        0x10e7b0ab4 - std::panicking::begin_panic_handler::{{closure}}::ha16c3377e66deceb
+   7:        0x10e7b0a18 - std::sys_common::backtrace::__rust_end_short_backtrace::hea8fdda1ea8a4c0e
+   8:        0x10e7b0a0c - _rust_begin_unwind
+   9:        0x10e8664c4 - core::panicking::panic_fmt::h1cb43b60f5788132
+  10:        0x10e86683c - core::result::unwrap_failed::h71a35eff74d84b68
+  11:        0x10e63ab50 - nx::native::pseudo_terminal::rust_pseudo_terminal::RustPseudoTerminal::run_command::h60e83121abdf9912
+  12:        0x10e63ca78 - nx::native::pseudo_terminal::rust_pseudo_terminal::RustPseudoTerminal::fork::ha62467a2965935dc
+  13:        0x10e6bb49c - nx::native::pseudo_terminal::rust_pseudo_terminal::__napi_impl_helper__RustPseudoTerminal__1::__napi__fork::h55352d7e9a773eee
+fatal runtime error: failed to initiate panic, error 5
+```
 
-### Does this performance difference matter in practice?
+The script itself is pretty simple:
+```bash
+#!/usr/bin/env bash
 
-The cache restoration Turborepo provides is likely to be fast enough for a lot of small and mid-size repos.
-What matters more is the ability to distribute any command across say 50 machines while
-preserving the dev ergonomics of running it on a single machine. Nx can do it. Bazel can do it (which Nx
-borrows some ideas from). Turbo can't. This is where the perf gains are for larger repos.
-See [this overview](https://nx.dev/ci/features/distribute-task-execution) and [this benchmark](https://github.com/vsavkin/interstellar) to learn more.
+export RUST_BACKTRACE=full
 
-## Dev ergonomics & Staying out of your way
+nx start crew &
+crew_pid=$!
 
-When some folks compare Nx and Turborepo, they say something like "Nx may do all of those things well, and may be
-faster, but Turbo is built to stay out of you way". Let's talk about staying out of your way:
+echo "crew PID: $crew_pid"
 
-Run `nx build crew --skip-nx-cache` and `turbo run build --scope=crew --force`:
+sleep 0.3
 
-![terminal outputs](./readme-assets/turbo-nx-terminal.gif)
+kill -9 $crew_pid
 
-Nx doesn't change your terminal output. Spinners, animations, colors are the same whether you use Nx or not. 
-What is also important is that when you restore things from cache, Nx will
-replay the terminal output identical to the one you would have had you run the command.
+wait
 
-Examine Turbo's output: no spinners, no animations, no colors. Pretty much anything you run with Turbo looks different (
-and a lot worse, to be honest) from running the same command without Turbo.
+```
 
-A lot of Nx users don't even know they use Nx, or even what Nx is. Things they run look the same, they just got faster.
+# Acknowledgements
 
-## Found an issue? Send a PR.
-
-If you find any issue with the repo, with the benchmark or the setup, please send a PR. The intention isn't to cherry
-pick some example where Turbo doesn't do well because of some weird edge case. If it happens that the repo surfaces some
-edge case with how turbo works, send a PR, and let's fix it. We tried to select the setup that Turbo should handle
-well (e.g., Next.js apps). The repo doesn't use any incrementality which Nx is very good at. We did our best to make it
-fair.
+This reproduction repository is made from a fork of https://github.com/vsavkin/large-monorepo
